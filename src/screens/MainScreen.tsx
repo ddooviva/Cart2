@@ -1,18 +1,135 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, 
   Text, 
   TouchableOpacity, 
-  FlatList, 
   TextInput, 
   Button, 
   StyleSheet, 
-  Modal 
+  Modal,
+  FlatList,
+  Dimensions,
+  LayoutRectangle
 } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  runOnJS,
+  useWorkletCallback,
+} from 'react-native-reanimated';
+import {
+  Gesture,
+  GestureDetector,
+  GestureHandlerRootView,
+} from 'react-native-gesture-handler';
 import { Location, ChecklistItem } from '../types';
 import { storeData, getData } from '../utils/storage';
 import uuid from 'react-native-uuid';
 import Icon from 'react-native-vector-icons/Ionicons';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
+
+interface LocationWithLayout extends Location {
+  layout?: LayoutRectangle;
+}
+
+const DraggableItem = React.memo(({ 
+  item, 
+  onToggle, 
+  layoutsRef,
+  onMove 
+}: { 
+  item: ChecklistItem;
+  onToggle: (id: string) => void;
+  layoutsRef: Animated.SharedValue<{[key: string]: { x: number, y: number, width: number, height: number }}>;
+  onMove: (item: ChecklistItem, locationId: string) => void;
+}) => {
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const scale = useSharedValue(1);
+  const isDropArea = useSharedValue(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const checkIfOverLocation = useCallback((x: number, y: number): string | null => {
+    'worklet';
+    const layouts = layoutsRef.value;
+    for (const locationId in layouts) {
+      const layout = layouts[locationId];
+      if (
+        x >= layout.x &&
+        x <= layout.x + layout.width &&
+        y >= layout.y &&
+        y <= layout.y + layout.height
+      ) {
+        return locationId;
+      }
+    }
+    return null;
+  }, []);
+
+  const gesture = Gesture.Pan()
+    .onBegin(() => {
+      scale.value = withSpring(1.1);
+      runOnJS(setIsDragging)(true);
+    })
+    .onUpdate((e) => {
+      translateX.value = e.translationX;
+      translateY.value = e.translationY;
+      
+      const locationId = checkIfOverLocation(e.absoluteX, e.absoluteY);
+      isDropArea.value = locationId !== null;
+    })
+    .onEnd((e) => {
+      const locationId = checkIfOverLocation(e.absoluteX, e.absoluteY);
+      if (locationId !== null) {
+        runOnJS(onMove)(item, locationId);
+      }
+      
+      translateX.value = withSpring(0);
+      translateY.value = withSpring(0);
+      scale.value = withSpring(1);
+      runOnJS(setIsDragging)(false);
+    });
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { scale: scale.value }
+    ],
+    zIndex: isDragging ? 100 : 1,
+  }));
+
+  return (
+    <GestureDetector gesture={gesture}>
+      <AnimatedTouchable
+        style={[
+          styles.checklistItem,
+          item.isChecked && styles.checkedItemContainer,
+          animatedStyle
+        ]}
+      >
+        <TouchableOpacity
+          style={styles.checkboxContainer}
+          onPress={() => onToggle(item.id)}
+        >
+          <View style={[
+            styles.checkbox,
+            item.isChecked && styles.checkboxChecked
+          ]}>
+            {item.isChecked && <Icon name="checkmark" size={16} color="#fff" />}
+          </View>
+          <Text style={item.isChecked ? styles.checkedItemText : styles.itemText}>
+            {item.name}
+          </Text>
+        </TouchableOpacity>
+      </AnimatedTouchable>
+    </GestureDetector>
+  );
+});
 
 const MainScreen: React.FC = () => {
   const [locations, setLocations] = useState<Location[]>([]);
@@ -21,13 +138,12 @@ const MainScreen: React.FC = () => {
   const [newLocationName, setNewLocationName] = useState<string>('');
   const [newItemName, setNewItemName] = useState<string>('');
   const [modalVisible, setModalVisible] = useState<boolean>(false);
+  const layoutsRef = useSharedValue<{[key: string]: { x: number, y: number, width: number, height: number }}>({});
 
-  // 앱 시작 시 저장된 데이터 불러오기
   useEffect(() => {
     loadSavedData();
   }, []);
 
-  // 데이터 저장 함수들
   const loadSavedData = async () => {
     const savedLocations = await getData('locations');
     const savedItems = await getData('checklistItems');
@@ -46,7 +162,29 @@ const MainScreen: React.FC = () => {
     await storeData('checklistItems', updatedItems);
   };
 
-  // 장소 추가 함수
+  const updateLocationLayout = useCallback((locationId: string, layout: any) => {
+    layoutsRef.value = {
+      ...layoutsRef.value,
+      [locationId]: {
+        x: layout.x,
+        y: layout.y,
+        width: layout.width,
+        height: layout.height
+      }
+    };
+  }, []);
+
+  const moveItemToLocation = useCallback((item: ChecklistItem, newLocationId: string) => {
+    if (item.locationId !== newLocationId) {
+      const updatedItems = checklistItems.map(checkItem =>
+        checkItem.id === item.id
+          ? { ...checkItem, locationId: newLocationId }
+          : checkItem
+      );
+      saveChecklistItems(updatedItems);
+    }
+  }, [checklistItems]);
+
   const addLocation = () => {
     if (!newLocationName.trim()) return;
 
@@ -58,10 +196,9 @@ const MainScreen: React.FC = () => {
     const updatedLocations = [...locations, newLocation];
     saveLocations(updatedLocations);
     setNewLocationName('');
-    setModalVisible(false); // 모달 닫기
+    setModalVisible(false);
   };
 
-  // 체크리스트 아이템 추가 함수
   const addChecklistItem = () => {
     if (!newItemName.trim() || !selectedLocation) return;
 
@@ -77,7 +214,6 @@ const MainScreen: React.FC = () => {
     setNewItemName('');
   };
 
-  // 체크리스트 아이템 토글 함수
   const toggleChecklistItem = (itemId: string) => {
     const updatedItems = checklistItems.map(item => 
       item.id === itemId ? { ...item, isChecked: !item.isChecked } : item
@@ -85,23 +221,33 @@ const MainScreen: React.FC = () => {
     saveChecklistItems(updatedItems);
   };
 
-  // 선택된 장소의 체크리스트 아이템 필터링 및 정렬
   const getFilteredItems = () => {
     if (!selectedLocation) return [];
     
-    const locationItems = checklistItems.filter(item => item.locationId === selectedLocation.id);
+    const locationItems = checklistItems.filter(item => 
+      item.locationId === selectedLocation.id
+    );
     
-    // 체크되지 않은 항목을 먼저, 체크된 항목을 나중에 표시
     return [
       ...locationItems.filter(item => !item.isChecked),
       ...locationItems.filter(item => item.isChecked)
     ];
   };
 
+  const renderItem = useCallback(({ item }: { item: ChecklistItem }) => {
+    return (
+      <DraggableItem
+        item={item}
+        onToggle={toggleChecklistItem}
+        layoutsRef={layoutsRef}
+        onMove={moveItemToLocation}
+      />
+    );
+  }, [toggleChecklistItem, moveItemToLocation, layoutsRef]);
+
   return (
-    <View style={styles.container}>
+    <GestureHandlerRootView style={styles.container}>
       <View style={styles.header}>
-        {/* 장소 목록 */}
         <FlatList
           data={locations}
           horizontal
@@ -111,15 +257,17 @@ const MainScreen: React.FC = () => {
                 styles.locationItem, 
                 selectedLocation?.id === item.id && styles.selectedLocationItem
               ]}
+              onLayout={(event) => updateLocationLayout(item.id, event.nativeEvent.layout)}
               onPress={() => setSelectedLocation(item)}
             >
-              <Text>{item.name}</Text>
+              <Text style={selectedLocation?.id === item.id ? styles.selectedLocationText : {}}>
+                {item.name}
+              </Text>
             </TouchableOpacity>
           )}
           keyExtractor={(item) => item.id}
         />
 
-        {/* 새 장소 추가 버튼 */}
         <TouchableOpacity 
           style={styles.addButton} 
           onPress={() => setModalVisible(true)}
@@ -128,7 +276,26 @@ const MainScreen: React.FC = () => {
         </TouchableOpacity>
       </View>
 
-      {/* 장소 추가 모달 */}
+      {selectedLocation && (
+        <View style={styles.checklistContainer}>
+          <View style={styles.inputContainer}>
+            <TextInput
+              style={styles.input}
+              value={newItemName}
+              onChangeText={setNewItemName}
+              placeholder="새 아이템 추가"
+            />
+            <Button title="추가" onPress={addChecklistItem} />
+          </View>
+
+          <FlatList
+            data={getFilteredItems()}
+            renderItem={renderItem}
+            keyExtractor={(item) => item.id}
+          />
+        </View>
+      )}
+
       <Modal
         animationType="slide"
         transparent={true}
@@ -146,51 +313,7 @@ const MainScreen: React.FC = () => {
           <Button title="취소" onPress={() => setModalVisible(false)} />
         </View>
       </Modal>
-
-      {/* 선택된 장소의 체크리스트 */}
-      {selectedLocation && (
-        <View style={styles.checklistContainer}>
-          <View style={styles.inputContainer}>
-            <TextInput
-              style={styles.input}
-              value={newItemName}
-              onChangeText={setNewItemName}
-              placeholder="새 아이템 추가"
-            />
-            <Button title="추가" onPress={addChecklistItem} />
-          </View>
-          
-          {/* 체크리스트 섹션 구분선 */}
-          <View style={styles.divider} />
-          
-          <FlatList
-            data={getFilteredItems()}
-            renderItem={({ item }) => (
-              <TouchableOpacity 
-                style={[
-                  styles.checklistItem,
-                  item.isChecked && styles.checkedItemContainer
-                ]}
-                onPress={() => toggleChecklistItem(item.id)}
-              >
-                <View style={styles.checkboxContainer}>
-                  <View style={[
-                    styles.checkbox,
-                    item.isChecked && styles.checkboxChecked
-                  ]}>
-                    {item.isChecked && <Icon name="checkmark" size={16} color="#fff" />}
-                  </View>
-                  <Text style={item.isChecked ? styles.checkedItemText : styles.itemText}>
-                    {item.name}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            )}
-            keyExtractor={(item) => item.id}
-          />
-        </View>
-      )}
-    </View>
+    </GestureHandlerRootView>
   );
 };
 
@@ -201,10 +324,44 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
-    height: 50, // 상단 10% 이내로 제한
+    height: 50,
+  },
+  locationList: {
+    flex: 1,
+  },
+  locationItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    marginRight: 10,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  selectedLocationItem: {
+    backgroundColor: '#007bff',
+  },
+  selectedLocationText: {
+    color: '#fff',
+  },
+  draggingItem: {
+    opacity: 0.7,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+  },
+  addButton: {
+    backgroundColor: '#007bff',
+    borderRadius: 50,
+    padding: 10,
+    marginLeft: 10,
+  },
+  checklistContainer: {
+    flex: 1,
   },
   inputContainer: {
     flexDirection: 'row',
@@ -216,42 +373,11 @@ const styles = StyleSheet.create({
     borderColor: '#ccc',
     padding: 8,
     marginRight: 10,
-  },
-  locationItem: {
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    marginRight: 10,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 50, // 동그라미 형태
-  },
-  selectedLocationItem: {
-    backgroundColor: '#007bff',
-  },
-  addButton: {
-    backgroundColor: '#007bff',
-    borderRadius: 50,
-    padding: 10,
-  },
-  modalView: {
-    margin: 20,
-    backgroundColor: 'white',
-    borderRadius: 20,
-    padding: 35,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  checklistContainer: {
-    flex: 1,
+    borderRadius: 5,
   },
   checklistItem: {
     padding: 15,
+    backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
   },
@@ -283,10 +409,25 @@ const styles = StyleSheet.create({
     textDecorationLine: 'line-through',
     color: '#888',
   },
-  divider: {
-    height: 1,
-    backgroundColor: '#eee',
-    marginVertical: 10,
+  modalView: {
+    margin: 20,
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 35,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  dropArea: {
+    borderWidth: 2,
+    borderColor: '#007bff',
+    borderStyle: 'dashed',
   },
 });
 
