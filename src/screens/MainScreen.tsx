@@ -85,6 +85,19 @@ const MainScreen: React.FC = () => {
     saveChecklistItems(updatedItems);
   };
 
+  // 선택된 장소의 체크리스트 아이템 필터링 및 정렬
+  const getFilteredItems = () => {
+    if (!selectedLocation) return [];
+    
+    const locationItems = checklistItems.filter(item => item.locationId === selectedLocation.id);
+    
+    // 체크되지 않은 항목을 먼저, 체크된 항목을 나중에 표시
+    return [
+      ...locationItems.filter(item => !item.isChecked),
+      ...locationItems.filter(item => item.isChecked)
+    ];
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -146,16 +159,31 @@ const MainScreen: React.FC = () => {
             />
             <Button title="추가" onPress={addChecklistItem} />
           </View>
+          
+          {/* 체크리스트 섹션 구분선 */}
+          <View style={styles.divider} />
+          
           <FlatList
-            data={checklistItems.filter(item => item.locationId === selectedLocation.id)}
+            data={getFilteredItems()}
             renderItem={({ item }) => (
               <TouchableOpacity 
-                style={styles.checklistItem}
+                style={[
+                  styles.checklistItem,
+                  item.isChecked && styles.checkedItemContainer
+                ]}
                 onPress={() => toggleChecklistItem(item.id)}
               >
-                <Text style={item.isChecked ? styles.checkedItem : {}}>
-                  {item.name}
-                </Text>
+                <View style={styles.checkboxContainer}>
+                  <View style={[
+                    styles.checkbox,
+                    item.isChecked && styles.checkboxChecked
+                  ]}>
+                    {item.isChecked && <Icon name="checkmark" size={16} color="#fff" />}
+                  </View>
+                  <Text style={item.isChecked ? styles.checkedItemText : styles.itemText}>
+                    {item.name}
+                  </Text>
+                </View>
               </TouchableOpacity>
             )}
             keyExtractor={(item) => item.id}
@@ -176,6 +204,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
+    height: 50, // 상단 10% 이내로 제한
   },
   inputContainer: {
     flexDirection: 'row',
@@ -196,7 +225,7 @@ const styles = StyleSheet.create({
     borderRadius: 50, // 동그라미 형태
   },
   selectedLocationItem: {
-    backgroundColor: '#e0e0e0',
+    backgroundColor: '#007bff',
   },
   addButton: {
     backgroundColor: '#007bff',
@@ -222,14 +251,43 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   checklistItem: {
-    padding: 10,
+    padding: 15,
     borderBottomWidth: 1,
-    borderBottomColor: '#ccc',
+    borderBottomColor: '#eee',
   },
-  checkedItem: {
+  checkedItemContainer: {
+    backgroundColor: '#f9f9f9',
+  },
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#007bff',
+    marginRight: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxChecked: {
+    backgroundColor: '#007bff',
+  },
+  itemText: {
+    fontSize: 16,
+  },
+  checkedItemText: {
+    fontSize: 16,
     textDecorationLine: 'line-through',
     color: '#888',
   },
+  divider: {
+    height: 1,
+    backgroundColor: '#eee',
+    marginVertical: 10,
+  },
 });
 
-export default MainScreen; 
+export default MainScreen;
